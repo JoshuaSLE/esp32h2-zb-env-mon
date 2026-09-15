@@ -2,6 +2,7 @@
 
 #include <string.h>
 #include <stdio.h>
+
 #include "esp_check.h"
 #include "esp_lcd_io_i2c.h"
 #include "esp_lcd_panel_dev.h"
@@ -180,6 +181,13 @@ esp_err_t display_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_handle_
     ESP_RETURN_ON_ERROR(esp_lcd_panel_reset(*panel_handle), TAG, "failed to reset the panel");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_init(*panel_handle), TAG, "failed to init the panel");
     ESP_RETURN_ON_ERROR(esp_lcd_panel_mirror(*panel_handle, true, true), TAG, "panel mirror failed");
+
+    // Clear the screen using the static framebuffer before turning it on
+    fb_clear();
+    ESP_RETURN_ON_ERROR(
+        esp_lcd_panel_draw_bitmap(*panel_handle, 0, 0, FB_WIDTH, FB_HEIGHT, framebuffer),
+        TAG, "failed to push clear buffer to panel");
+
     ESP_RETURN_ON_ERROR(esp_lcd_panel_disp_on_off(*panel_handle, true), TAG, "failed to turn on the panel");
 
     return ESP_OK;
@@ -211,12 +219,12 @@ esp_err_t display_show_readings(esp_lcd_panel_handle_t panel_handle,
 
     char line1[16], line2[16], line3[16], line4[16];
 
-    snprintf(line1, sizeof(line1), " --Reporting-- ");
-    snprintf(line2, sizeof(line2), "%.1f\xB0"
-                                   "C",
-             temp_c);
-    snprintf(line3, sizeof(line3), "%.0f%%", humidity_pct);
-    snprintf(line4, sizeof(line4), "%.0f hPa", pressure_hpa);
+    (void)snprintf(line1, sizeof(line1), "Readings");
+    (void)snprintf(line2, sizeof(line2), "%.1f\xB0"
+                                         "C",
+                   temp_c);
+    (void)snprintf(line3, sizeof(line3), "%.0f%%", humidity_pct);
+    (void)snprintf(line4, sizeof(line4), "%.0f hPa", pressure_hpa);
 
     fb_clear();
     fb_draw_string(0, 0, line1);

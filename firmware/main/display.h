@@ -46,6 +46,28 @@ extern "C"
      */
     esp_err_t display_off_on(esp_lcd_panel_handle_t panel_handle, bool off_on);
 
+    /**
+     * @brief Display off.
+     *
+     * @param panel_handle Display panel handle.
+     * @return esp_err_t
+     */
+    static inline esp_err_t display_off(esp_lcd_panel_handle_t panel_handle)
+    {
+        return display_off_on(panel_handle, true);
+    }
+
+    /**
+     * @brief Display on.
+     *
+     * @param panel_handle Display panel handle.
+     * @return esp_err_t
+     */
+    static inline esp_err_t display_on(esp_lcd_panel_handle_t panel_handle)
+    {
+        return display_off_on(panel_handle, true);
+    }
+
 #ifdef __cplusplus
 }
 #endif

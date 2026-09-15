@@ -7,21 +7,25 @@
 #include "esp_bit_defs.h"
 #include "esp_check.h"
 #include "esp_log.h"
-#include "esp_timer.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "freertos/queue.h"
+#include "esp_task.h"
 
-#define BME280_SAMPLE_INTERVAL_US (60ULL * 1000 * 1000)
+#define BME280_SAMPLE_INTERVAL_MS (60 * 1000)
 
 static const char *TAG = "sensor_manager";
 
 static QueueHandle_t zigbee_queue = NULL;
 static TaskHandle_t presence_task_handle = NULL;
 
+static portMUX_TYPE reading_lock = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool reading_dirty = false;
+
 static bme280_handle_t bme280_handle = NULL;
 static vcnl4010_handle_t vcnl4010_handle = NULL;
 static esp_lcd_panel_handle_t display_handle = NULL;
+
+// Runtime configurable timeout (5s - 60s)
+static uint32_t display_timeout_ms = CONFIG_APP_DISPLAY_TIMEOUT_MS;
+static bme280_data_t cached_reading = {0};
 
 static void IRAM_ATTR vcnl4010_isr_handler(void *arg)
 {
@@ -32,142 +36,127 @@ static void IRAM_ATTR vcnl4010_isr_handler(void *arg)
 
 static void post_zigbee_event(const sensor_event_t *evt)
 {
-    if (zigbee_queue == NULL)
+    if (zigbee_queue != NULL)
     {
-        return;
+        xQueueSend(zigbee_queue, evt, 0);
     }
-    xQueueSend(zigbee_queue, evt, 0);
 }
 
-static int64_t handle_presence_event(const bme280_data_t *cached_reading, bool *display_is_on, int64_t now_us)
+// ---------------------------------------------------------------------------
+// Periodic BME280 Sampling Task (System Tick Driven)
+// ---------------------------------------------------------------------------
+static void bme280_task(void *pvParameters)
 {
-    uint8_t int_status = 0;
-    esp_err_t err = vcnl4010_clear_interrupt(vcnl4010_handle, &int_status);
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "failed to clear vcnl4010 interrupt: %s", esp_err_to_name(err));
-        return now_us;
-    }
-
-    if (!*display_is_on)
-    {
-        err = display_off_on(display_handle, true);
-        if (err != ESP_OK)
-        {
-            ESP_LOGW(TAG, "failed to turn on display: %s", esp_err_to_name(err));
-        }
-        *display_is_on = true;
-    }
-
-    err = display_show_readings(display_handle, cached_reading->temp, cached_reading->hum, cached_reading->press);
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "failed to update display: %s", esp_err_to_name(err));
-    }
-
-    post_zigbee_event(&(sensor_event_t){.type = SENSOR_EVENT_PRESENCE_DETECTED});
-
-    return now_us + ((int64_t)CONFIG_APP_DISPLAY_TIMEOUT_MS * 1000);
-}
-
-static bool maybe_sample_bme280(bme280_data_t *cached_reading, int64_t *last_bme_read_us,
-                                bool display_is_on, int64_t now_us)
-{
-    if ((now_us - *last_bme_read_us) < BME280_SAMPLE_INTERVAL_US)
-    {
-        return false;
-    }
-
-    esp_err_t err = bme280_trigger_measurement(bme280_handle);
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "bme280 trigger failed: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    bme280_data_t reading;
-    err = bme280_read_data(bme280_handle, &reading);
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "bme280 read failed: %s", esp_err_to_name(err));
-        return false;
-    }
-
-    *cached_reading = reading;
-    *last_bme_read_us = now_us;
-
-    if (display_is_on)
-    {
-        err = display_show_readings(display_handle, reading.temp, reading.hum, reading.press);
-        if (err != ESP_OK)
-        {
-            ESP_LOGW(TAG, "failed to update display: %s", esp_err_to_name(err));
-        }
-    }
-
-    post_zigbee_event(&(sensor_event_t){
-        .type = SENSOR_EVENT_BME280_UPDATED,
-        .temp = reading.temp,
-        .hum = reading.hum,
-        .press = reading.press,
-    });
-
-    return true;
-}
-
-static void maybe_timeout_display(bool *display_is_on, int64_t display_off_target_us, int64_t now_us)
-{
-    if (!*display_is_on || now_us < display_off_target_us)
-    {
-        return;
-    }
-
-    esp_err_t err = display_off_on(display_handle, false);
-    if (err != ESP_OK)
-    {
-        ESP_LOGW(TAG, "failed to turn off display: %s", esp_err_to_name(err));
-        return;
-    }
-    *display_is_on = false;
-}
-
-static void presence_task(void *pvParameters)
-{
-    bme280_data_t cached_reading = {0};
-    int64_t last_bme_read_us = 0;
-    int64_t display_off_target_us = 0;
-
-    bool display_is_on = true;
-
-    if (bme280_trigger_measurement(bme280_handle) == ESP_OK)
-    {
-        (void)bme280_read_data(bme280_handle, &cached_reading);
-        last_bme_read_us = esp_timer_get_time();
-
-        display_off_target_us = last_bme_read_us + ((int64_t)CONFIG_APP_DISPLAY_TIMEOUT_MS * 1000);
-        (void)display_show_readings(display_handle, cached_reading.temp, cached_reading.hum, cached_reading.press);
-    }
-    else
-    {
-        display_off_target_us = esp_timer_get_time() + ((int64_t)CONFIG_APP_DISPLAY_TIMEOUT_MS * 1000);
-    }
+    TickType_t last_wake_time = xTaskGetTickCount();
+    const TickType_t sample_interval = pdMS_TO_TICKS(BME280_SAMPLE_INTERVAL_MS);
 
     while (1)
     {
-        uint32_t presence_event = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
-        int64_t now_us = esp_timer_get_time();
+        // Blocks until exactly 60 seconds have passed since the last wake up
+        vTaskDelayUntil(&last_wake_time, sample_interval);
 
-        if (presence_event > 0)
+        esp_err_t err = bme280_trigger_measurement(bme280_handle);
+        if (err != ESP_OK)
         {
-            display_off_target_us = handle_presence_event(&cached_reading, &display_is_on, now_us);
+            ESP_LOGW(TAG, "bme280 trigger failed: %s", esp_err_to_name(err));
+            continue;
         }
 
-        maybe_sample_bme280(&cached_reading, &last_bme_read_us, display_is_on, now_us);
-        maybe_timeout_display(&display_is_on, display_off_target_us, now_us);
+        bme280_data_t reading;
+        err = bme280_read_data(bme280_handle, &reading);
+        if (err != ESP_OK)
+        {
+            ESP_LOGW(TAG, "bme280 read failed: %s", esp_err_to_name(err));
+            continue;
+        }
+
+        portENTER_CRITICAL(&reading_lock);
+        cached_reading = reading;
+        reading_dirty = true;
+        portEXIT_CRITICAL(&reading_lock);
+
+        post_zigbee_event(&(sensor_event_t){
+            .type = SENSOR_EVENT_BME280_UPDATED,
+            .temp = reading.temp,
+            .hum = reading.hum,
+            .press = reading.press,
+        });
     }
 }
 
-esp_err_t presence_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_handle_t panel_handle, QueueHandle_t zb_queue)
+// ---------------------------------------------------------------------------
+// Event-Driven Motion & Display Task
+// ---------------------------------------------------------------------------
+static void presence_task(void *pvParameters)
+{
+    TickType_t display_off_target_tick = 0;
+    bool display_is_on = true;
+
+    // Initial boot read
+    if (bme280_trigger_measurement(bme280_handle) == ESP_OK)
+    {
+        bme280_read_data(bme280_handle, &cached_reading);
+        display_show_readings(display_handle, cached_reading.temp, cached_reading.hum, cached_reading.press);
+        reading_dirty = false;
+    }
+
+    display_off_target_tick = xTaskGetTickCount() + pdMS_TO_TICKS(display_timeout_ms);
+
+    while (1)
+    {
+        // 1000ms timeout allows checking BME280 updates even without motion
+        uint32_t motion_detected = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        TickType_t now_ticks = xTaskGetTickCount();
+
+        if (motion_detected > 0)
+        {
+            uint8_t int_status = 0;
+            vcnl4010_clear_interrupt(vcnl4010_handle, &int_status);
+
+            if (!display_is_on)
+            {
+                display_on(display_handle);
+                display_is_on = true;
+
+                // Force a redraw so the screen isn't blank on wake
+                portENTER_CRITICAL(&reading_lock);
+                reading_dirty = true;
+                portEXIT_CRITICAL(&reading_lock);
+            }
+
+            display_off_target_tick = now_ticks + pdMS_TO_TICKS(display_timeout_ms);
+            post_zigbee_event(&(sensor_event_t){.type = SENSOR_EVENT_PRESENCE_DETECTED});
+        }
+
+        // Redraw whenever new data arrives while display is active
+        if (display_is_on)
+        {
+            bool need_redraw;
+            bme280_data_t reading_copy;
+
+            portENTER_CRITICAL(&reading_lock);
+            need_redraw = reading_dirty;
+            reading_copy = cached_reading;
+            reading_dirty = false;
+            portEXIT_CRITICAL(&reading_lock);
+
+            if (need_redraw)
+            {
+                display_show_readings(display_handle, reading_copy.temp, reading_copy.hum, reading_copy.press);
+            }
+        }
+
+        // Check timeout
+        if (display_is_on && (now_ticks >= display_off_target_tick))
+        {
+            if (display_off(display_handle) == ESP_OK)
+            {
+                display_is_on = false;
+            }
+        }
+    }
+}
+esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_handle_t panel_handle, QueueHandle_t zb_queue)
 {
     if (!bus_handle || !panel_handle)
     {
@@ -225,7 +214,21 @@ esp_err_t presence_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_handle
     }
     ESP_RETURN_ON_ERROR(gpio_isr_handler_add(CONFIG_APP_VCNL4010_INT_GPIO, vcnl4010_isr_handler, NULL), TAG, "isr add failed");
 
-    BaseType_t ret = xTaskCreate(presence_task, "presence_task", 3072, NULL, 5, &presence_task_handle);
+    BaseType_t ret1 = xTaskCreate(presence_task, "presence_task", 3072, NULL, 5, &presence_task_handle);
+    BaseType_t ret2 = xTaskCreate(bme280_task, "bme280_task", 3072, NULL, 4, NULL);
 
-    return (ret == pdPASS) ? ESP_OK : ESP_FAIL;
+    return (ret1 == pdPASS && ret2 == pdPASS) ? ESP_OK : ESP_FAIL;
+}
+
+esp_err_t sensor_manager_set_display_timeout_ms(uint32_t timeout_ms)
+{
+    if (timeout_ms < DISPLAY_TIMEOUT_MIN_MS || timeout_ms > DISPLAY_TIMEOUT_MAX_MS)
+    {
+        ESP_LOGW(TAG, "Rejected invalid display timeout: %" PRIu32 " ms", timeout_ms);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    display_timeout_ms = timeout_ms;
+    ESP_LOGI(TAG, "Display timeout set to %" PRIu32 " ms", timeout_ms);
+    return ESP_OK;
 }

@@ -24,7 +24,7 @@ void app_main(void)
     ESP_ERROR_CHECK(i2c_bus_init(&i2c_bus_handle));
     ESP_ERROR_CHECK(display_init(i2c_bus_handle, &panel_handle));
 
-    ESP_ERROR_CHECK(presence_init(i2c_bus_handle, panel_handle, zigbee_event_queue));
+    ESP_ERROR_CHECK(sensor_manager_init(i2c_bus_handle, panel_handle, zigbee_event_queue));
 
     // Zigbee init here
 }

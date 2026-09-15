@@ -54,7 +54,7 @@ extern "C"
      */
     static inline esp_err_t display_off(esp_lcd_panel_handle_t panel_handle)
     {
-        return display_off_on(panel_handle, true);
+        return display_off_on(panel_handle, false);
     }
 
     /**

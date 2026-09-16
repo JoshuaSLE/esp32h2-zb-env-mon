@@ -78,6 +78,30 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
     return true;
 }
 
+esp_err_t esp_zigbee_create_environmental_monitor(void)
+{
+    ezb_af_device_desc_t dev_desc = ezb_af_create_device_desc();
+    ezb_af_ep_desc_t ep_desc = {0};
+    ezb_zcl_cluster_desc_t basic_desc = {0};
+
+    basic_desc = ezb_af_endpoint_get_cluster_desc(ep_desc, EZB_ZCL_CLUSTER_ID_BASIC, EZB_ZCL_CLUSTER_SERVER);
+    ezb_zcl_basic_cluster_desc_add_attr(basic_desc, EZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID, (void *)CONFIG_APP_ZB_MANUFACTURER_NAME);
+    ezb_zcl_basic_cluster_desc_add_attr(basic_desc, EZB_ZCL_ATTR_BASIC_MODEL_IDENTIFIER_ID, (void *)CONFIG_APP_ZB_MODEL_IDENTIFIER);
+
+    ezb_af_ep_config_t ep_config = {
+        .ep_id = 1,
+        .app_profile_id = EZB_AF_HA_PROFILE_ID,
+        .app_device_id = {0},
+        .app_device_version = 0,
+    };
+    ep_desc = ezb_af_create_endpoint_desc(&ep_config);
+
+    ESP_ERROR_CHECK(ezb_af_device_add_endpoint_desc(dev_desc, ep_desc));
+    ESP_ERROR_CHECK(ezb_af_device_desc_register(dev_desc));
+
+    return ESP_OK;
+}
+
 esp_err_t esp_zigbee_setup_commissioning(void)
 {
     ezb_aps_secur_enable_distributed_security(false);
@@ -109,7 +133,7 @@ static void zigbee_stack_main_task(void *pvParameters)
 
     ESP_ERROR_CHECK(esp_zigbee_setup_commissioning());
 
-    /* Create and register the ZCL data model. */
+    ESP_ERROR_CHECK(esp_zigbee_create_environmental_monitor());
 
     ESP_ERROR_CHECK(esp_zigbee_start(false));
 

@@ -1,3 +1,4 @@
+#include "app_zigbee.h"
 #include "display.h"
 #include "i2c_bus.h"
 #include "sensor_manager.h"
@@ -26,5 +27,5 @@ void app_main(void)
 
     ESP_ERROR_CHECK(sensor_manager_init(i2c_bus_handle, panel_handle, zigbee_event_queue));
 
-    // Zigbee init here
+    ESP_ERROR_CHECK(app_zigbee_init());
 }

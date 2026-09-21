@@ -23,8 +23,6 @@ static bme280_handle_t bme280_handle = NULL;
 static vcnl4010_handle_t vcnl4010_handle = NULL;
 static esp_lcd_panel_handle_t display_handle = NULL;
 
-// Runtime configurable timeout (5s - 60s)
-static uint32_t display_timeout_ms = CONFIG_APP_DISPLAY_TIMEOUT_MS;
 static bme280_data_t cached_reading = {0};
 
 static void IRAM_ATTR vcnl4010_isr_handler(void *arg)
@@ -100,7 +98,7 @@ static void presence_task(void *pvParameters)
         reading_dirty = false;
     }
 
-    display_off_target_tick = xTaskGetTickCount() + pdMS_TO_TICKS(display_timeout_ms);
+    display_off_target_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_APP_DISPLAY_TIMEOUT_MS);
 
     while (1)
     {
@@ -124,7 +122,7 @@ static void presence_task(void *pvParameters)
                 portEXIT_CRITICAL(&reading_lock);
             }
 
-            display_off_target_tick = now_ticks + pdMS_TO_TICKS(display_timeout_ms);
+            display_off_target_tick = now_ticks + pdMS_TO_TICKS(CONFIG_APP_DISPLAY_TIMEOUT_MS);
             post_zigbee_event(&(sensor_event_t){.type = SENSOR_EVENT_PRESENCE_DETECTED});
         }
 
@@ -156,6 +154,7 @@ static void presence_task(void *pvParameters)
         }
     }
 }
+
 esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_handle_t panel_handle, QueueHandle_t zb_queue)
 {
     if (!bus_handle || !panel_handle)
@@ -218,17 +217,4 @@ esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_
     BaseType_t ret2 = xTaskCreate(bme280_task, "bme280_task", 3072, NULL, 4, NULL);
 
     return (ret1 == pdPASS && ret2 == pdPASS) ? ESP_OK : ESP_FAIL;
-}
-
-esp_err_t sensor_manager_set_display_timeout_ms(uint32_t timeout_ms)
-{
-    if (timeout_ms < DISPLAY_TIMEOUT_MIN_MS || timeout_ms > DISPLAY_TIMEOUT_MAX_MS)
-    {
-        ESP_LOGW(TAG, "Rejected invalid display timeout: %" PRIu32 " ms", timeout_ms);
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    display_timeout_ms = timeout_ms;
-    ESP_LOGI(TAG, "Display timeout set to %" PRIu32 " ms", timeout_ms);
-    return ESP_OK;
 }

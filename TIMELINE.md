@@ -27,8 +27,6 @@ display timeout/power-off logic
 
 * Map BME280 data to standard Zigbee clusters (temperature, humidity,
 pressure) where standard clusters exist
-* Map VCNL4010 data to illuminance/occupancy clusters (or custom clusters
-if no standard fit)
 * Implement attribute reporting intervals/thresholds
 * Re-test against ZHA and Zigbee2MQTT after cluster changes
 

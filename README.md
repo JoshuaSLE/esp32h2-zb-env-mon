@@ -61,7 +61,7 @@ No manual cloning of `esp-zigbee-lib` is required.
 
 1. VCNL4010 proximity interrupt fires (e.g. hand wave / presence near sensor).
 2. MCU wakes, reads BME280 + VCNL4010, updates SSD1306 with live values.
-3. Display stays on for a configurable timeout, then powers off to save
+3. Display stays on for a set timeout, then powers off to save
    power until the next interrupt.
 
 ## Zigbee Network Compatibility

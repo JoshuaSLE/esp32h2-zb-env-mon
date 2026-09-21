@@ -6,9 +6,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 
-#define DISPLAY_TIMEOUT_MIN_MS (5 * 1000)
-#define DISPLAY_TIMEOUT_MAX_MS (60 * 1000)
-
 #ifdef __cplusplus
 extern "C"
 {
@@ -47,14 +44,6 @@ extern "C"
     esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle,
                                   esp_lcd_panel_handle_t panel_handle,
                                   QueueHandle_t zb_queue);
-
-    /**
-     * @brief Update the display auto-off timeout dynamically.
-     *
-     * @param timeout_ms Target timeout in milliseconds (5000 - 60000 ms).
-     * @return esp_err_t
-     */
-    esp_err_t sensor_manager_set_display_timeout_ms(uint32_t timeout_ms);
 
 #ifdef __cplusplus
 }

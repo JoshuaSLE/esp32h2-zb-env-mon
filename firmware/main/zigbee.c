@@ -11,11 +11,14 @@ static const char *TAG = "zigbee";
 
 #define ESP_ZIGBEE_STORAGE_PARTITION_NAME "nvs"
 
-#define ZCL_STRING_ATTR(buf_name, str_val, max_len) ({                           \
-    static char buf_name[max_len + 1];                                           \
-    buf_name[0] = (char)(strlen(str_val) > max_len ? max_len : strlen(str_val)); \
-    strncpy(&buf_name[1], str_val, max_len);                                     \
-    buf_name;                                                                    \
+#define ZCL_STRING_ATTR(buf_name, str_val, max_len) ({ \
+    static char buf_name[max_len + 1];                 \
+    size_t _len = strlen(str_val);                     \
+    if (_len > max_len)                                \
+        _len = max_len;                                \
+    buf_name[0] = (char)_len;                          \
+    memcpy(&buf_name[1], str_val, _len);               \
+    buf_name;                                          \
 })
 
 #define ESP_MANUFACTURER_NAME ZCL_STRING_ATTR(mfg_name, CONFIG_APP_ZB_MANUFACTURER_NAME, 32)
@@ -115,7 +118,7 @@ static esp_err_t create_data_model(void)
     /* Basic cluster */
     ezb_zcl_basic_cluster_server_config_t basic_cfg = {
         .zcl_version = EZB_ZCL_BASIC_ZCL_VERSION_DEFAULT_VALUE,
-        .power_source = EZB_ZCL_BASIC_POWER_SOURCE_SINGLE_PHASE_MAINS,
+        .power_source = EZB_ZCL_BASIC_POWER_SOURCE_UNKNOWN,
     };
     ezb_zcl_cluster_desc_t basic_desc = ezb_zcl_basic_create_cluster_desc(&basic_cfg, EZB_ZCL_CLUSTER_SERVER);
     ezb_zcl_basic_cluster_desc_add_attr(basic_desc, EZB_ZCL_ATTR_BASIC_MANUFACTURER_NAME_ID,
@@ -201,6 +204,8 @@ static void zigbee_stack_main_task(void *pvParameters)
 
     ESP_ERROR_CHECK(esp_zigbee_init(&config));
 
+    ezb_nwk_set_rx_on_when_idle(false);
+
     ESP_ERROR_CHECK(esp_zigbee_setup_commissioning());
 
     ESP_ERROR_CHECK(create_data_model());
@@ -222,17 +227,20 @@ esp_err_t zigbee_init(void)
     BaseType_t ret = xTaskCreate(zigbee_stack_main_task, "Zigbee_main", 4096, NULL, 5, NULL);
 
     return ret == pdPASS ? ESP_OK : ESP_FAIL;
-
-    return ESP_OK;
 }
 
 void zigbee_report_bme280(const bme280_data_t *reading)
 {
+    if (reading == NULL)
+    {
+        return;
+    }
+
     esp_zigbee_lock_acquire(portMAX_DELAY);
 
     int16_t temp_zcl = (int16_t)(reading->temp * 100.0f); // 0.1 °C units
     uint16_t hum_zcl = (uint16_t)(reading->hum * 100.0f); // 0.01 %RH units
-    uint16_t press_zcl = (uint16_t)(reading->press);      // 0.01 hPA uints
+    int16_t press_zcl = (int16_t)(reading->press);        // 0.01 hPA uints
 
     ezb_zcl_status_t temp_attr = ezb_zcl_set_attr_value(ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER, EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &temp_zcl, false);
 

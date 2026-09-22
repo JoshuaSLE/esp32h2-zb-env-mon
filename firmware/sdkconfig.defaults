@@ -1,0 +1,18 @@
+# --- Zigbee ---
+CONFIG_ZB_ENABLED=y
+CONFIG_ZB_RADIO_NATIVE=y
+CONFIG_ZB_DEBUG_MODE=n
+
+# --- Power management ---
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+
+# --- Keep tick rate low so light sleep isn't interrupted ---
+CONFIG_FREERTOS_HZ=100
+
+# --- Let flash sleep ---
+CONFIG_ESP_SLEEP_FLASH_LEAKAGE_WORKAROUND=y
+
+# --- Partition table ---
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"

@@ -54,4 +54,3 @@ available)
 ## Phase 7 (Optional, Later) — Custom PCB
 
 * Not required for current scope; revisit once perfboard build is stable
-

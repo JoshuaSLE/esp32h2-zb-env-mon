@@ -1,5 +1,6 @@
 #include "zigbee.h"
 #include "alarm_timer.h"
+#include "sensor_manager.h"
 
 #include "esp_check.h"
 #include "esp_log.h"
@@ -20,7 +21,8 @@ static const char *TAG = "zigbee";
 #define ESP_MANUFACTURER_NAME ZCL_STRING_ATTR(mfg_name, CONFIG_APP_ZB_MANUFACTURER_NAME, 32)
 #define ESP_MODEL_IDENTIFIER ZCL_STRING_ATTR(model_id, CONFIG_APP_ZB_MODEL_IDENTIFIER, 32)
 
-#define ENDPOINT_ID 1
+#define ENV_MONITOR_EP_ID 1
+#define ZCL_MEASURED_VALUE_ATTR_ID 0x0000
 
 static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 {
@@ -96,7 +98,7 @@ static esp_err_t create_data_model(void)
     }
 
     ezb_af_ep_config_t ep_config = {
-        .ep_id = ENDPOINT_ID,
+        .ep_id = ENV_MONITOR_EP_ID,
         .app_profile_id = EZB_AF_HA_PROFILE_ID,
         .app_device_id = 0xFFF0, // custom device ID
         .app_device_version = 0,
@@ -222,4 +224,49 @@ esp_err_t zigbee_init(void)
     return ret == pdPASS ? ESP_OK : ESP_FAIL;
 
     return ESP_OK;
+}
+
+void zigbee_report_bme280(const bme280_data_t *reading)
+{
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+
+    int16_t temp_zcl = (int16_t)(reading->temp * 100.0f); // 0.1 °C units
+    uint16_t hum_zcl = (uint16_t)(reading->hum * 100.0f); // 0.01 %RH units
+    uint16_t press_zcl = (uint16_t)(reading->press);      // 0.01 hPA uints
+
+    ezb_zcl_status_t temp_attr = ezb_zcl_set_attr_value(ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER, EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &temp_zcl, false);
+
+    ezb_zcl_status_t hum_attr = ezb_zcl_set_attr_value(ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER, EZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &hum_zcl, false);
+
+    ezb_zcl_status_t press_attr = ezb_zcl_set_attr_value(ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER, EZB_ZCL_ATTR_PRESSURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &press_zcl, false);
+
+    if (temp_attr != EZB_ZCL_STATUS_SUCCESS || hum_attr != EZB_ZCL_STATUS_SUCCESS || press_attr != EZB_ZCL_STATUS_SUCCESS || !ezb_bdb_dev_joined())
+    {
+        esp_zigbee_lock_release();
+        return;
+    }
+
+    ezb_zcl_report_attr_cmd_t report = {
+        .cmd_ctrl = {
+            .dst_addr.addr_mode = EZB_ADDR_MODE_NONE,
+            .src_ep = ENV_MONITOR_EP_ID,
+            .cluster_id = EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT,
+            .fc.direction = EZB_ZCL_CMD_DIRECTION_TO_CLI,
+        },
+        .payload = {
+            .attr_id = EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID,
+        },
+    };
+
+    ezb_zcl_report_attr_cmd_req(&report);
+
+    report.cmd_ctrl.cluster_id = EZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT;
+    report.payload.attr_id = EZB_ZCL_ATTR_PRESSURE_MEASUREMENT_MEASURED_VALUE_ID;
+    ezb_zcl_report_attr_cmd_req(&report);
+
+    report.cmd_ctrl.cluster_id = EZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
+    report.payload.attr_id = EZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_MEASURED_VALUE_ID;
+    ezb_zcl_report_attr_cmd_req(&report);
+
+    esp_zigbee_lock_release();
 }

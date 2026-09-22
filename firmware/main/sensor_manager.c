@@ -2,6 +2,7 @@
 #include "bme280.h"
 #include "display.h"
 #include "vcnl4010.h"
+#include "zigbee.h"
 
 #include "driver/gpio.h"
 #include "esp_bit_defs.h"
@@ -72,6 +73,8 @@ static void bme280_task(void *pvParameters)
         cached_reading = reading;
         reading_dirty = true;
         portEXIT_CRITICAL(&reading_lock);
+
+        zigbee_report_bme280(&reading);
 
         post_zigbee_event(&(sensor_event_t){
             .type = SENSOR_EVENT_BME280_UPDATED,

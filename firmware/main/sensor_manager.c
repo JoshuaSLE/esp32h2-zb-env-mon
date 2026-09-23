@@ -25,6 +25,7 @@ static bme280_handle_t bme280_handle = NULL;
 static vcnl4010_handle_t vcnl4010_handle = NULL;
 static esp_lcd_panel_handle_t display_handle = NULL;
 
+static uint32_t display_timeout_ms = CONFIG_APP_DISPLAY_TIMEOUT_MS;
 static bme280_data_t cached_reading = {0};
 
 static void IRAM_ATTR vcnl4010_isr_handler(void *arg)
@@ -100,7 +101,7 @@ static void presence_task(void *pvParameters)
         }
     }
 
-    display_off_target_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_APP_DISPLAY_TIMEOUT_MS);
+    display_off_target_tick = xTaskGetTickCount() + pdMS_TO_TICKS(display_timeout_ms);
 
     while (1)
     {
@@ -130,7 +131,7 @@ static void presence_task(void *pvParameters)
                 portEXIT_CRITICAL(&reading_lock);
             }
 
-            display_off_target_tick = now_ticks + pdMS_TO_TICKS(CONFIG_APP_DISPLAY_TIMEOUT_MS);
+            display_off_target_tick = now_ticks + pdMS_TO_TICKS(display_timeout_ms);
         }
 
         if (display_is_on)
@@ -184,7 +185,6 @@ esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle,
 
     vcnl4010_config_t vcnl_cfg = {
         .bus_handle = bus_handle,
-        .i2c_address = CONFIG_APP_VCNL4010_I2C_ADDR,
         .scl_speed_hz = CONFIG_APP_I2C_FREQ_HZ,
         .self_timed = true,
         .prox_enabled = true,

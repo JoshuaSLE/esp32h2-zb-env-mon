@@ -36,7 +36,7 @@ esp_err_t vcnl4010_init(const vcnl4010_config_t *config, vcnl4010_handle_t *ret_
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = config->i2c_address,
+        .device_address = VCNL4010_I2C_ADDR,
         .scl_speed_hz = config->scl_speed_hz,
     };
 

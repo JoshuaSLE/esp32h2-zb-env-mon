@@ -1,16 +1,27 @@
 menu "Application Configuration"
 
+    menu "Input"
+        config APP_INPUT_RST_GPIO
+            int "Reset button GPIO number"
+            range 0 27
+            default 5
+            help
+                GPIO wired to the physical reset/pairing button. Short press
+                triggers Zigbee Identify; long press (see firmware) triggers
+                a factory reset / leave-network action.
+    endmenu
+
     menu "I2C Bus"
         config APP_I2C_SDA_GPIO
             int "I2C SDA GPIO number"
-            range 0 23
+            range 0 27
             default 10
             help
                 GPIO used for I2C SDA line.
 
         config APP_I2C_SCL_GPIO
             int "I2C SCL GPIO number"
-            range 0 23
+            range 0 27
             default 11
             help
                 GPIO used for I2C SCL line.
@@ -23,7 +34,7 @@ menu "Application Configuration"
                 Standard mode: 100000, Fast mode: 400000.
 
         config APP_I2C_TIMEOUT_MS
-            int "I2C clock frequency (Hz)"
+            int "I2C transaction timeout (ms)"
             range 100 1000
             default 100
             help
@@ -45,15 +56,14 @@ menu "Application Configuration"
     endmenu
 
     menu "VCNL4010"
-        config APP_VCNL4010_I2C_ADDR
-            hex "VCNL4010 I2C address"
-            default 0x13    
-
         config APP_VCNL4010_INT_GPIO
             int "VCNL4010 interrupt GPIO"
-            default 12
+            range 0 27
+            default 0
             help
                 GPIO wired to the VCNL4010 INT pin, used to wake the display.
+                NOTE: verify this pin is not a boot-mode strapping pin on
+                your specific board before relying on the default of 0.
 
         config APP_VCNL4010_PROX_THRESHOLD
             int "Proximity trigger threshold"
@@ -70,15 +80,52 @@ menu "Application Configuration"
             help
                 0x3C or 0x3D depending on SA0/ADDR pin wiring.
 
+        config APP_DISPLAY_TIMEOUT_MIN_MS
+            int "Minimum display timeout (ms)"
+            default 5000
+            help
+                Lower bound accepted for display auto-off timeout.
+
+        config APP_DISPLAY_TIMEOUT_MAX_MS
+            int "Maximum display timeout (ms)"
+            default 60000
+            help
+                Upper bound accepted for display auto-off timeout.
+
         config APP_DISPLAY_TIMEOUT_MS
             int "Display auto-off timeout (ms)"
+            range APP_DISPLAY_TIMEOUT_MIN_MS APP_DISPLAY_TIMEOUT_MAX_MS
             default 15000
             help
                 How long the OLED stays on after a proximity wake before
                 powering off again.
     endmenu
 
-    menu "Zigbee Device Identity"
+    menu "Rotary Encoder"
+        config APP_ENCODER_INVERT
+            bool "Encoder invert"
+            default n
+            help
+                Swap the effective rotation direction if turning the knob
+                clockwise decreases the value instead of increasing it
+                (depends on how A/B are wired).
+
+        config APP_ENCODER_A_GPIO
+            int "Encoder A GPIO pin"
+            range 0 27
+            default 12
+            help
+                GPIO wired to the rotary encoder's A (CLK) phase output.
+
+        config APP_ENCODER_B_GPIO
+            int "Encoder B GPIO pin"
+            range 0 27
+            default 22
+            help
+                GPIO wired to the rotary encoder's B (DT) phase output.
+    endmenu
+
+    menu "Zigbee Config"
         config APP_ZB_MANUFACTURER_NAME
             string "Zigbee manufacturer name"
             default "DIY"

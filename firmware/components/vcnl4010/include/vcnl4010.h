@@ -114,7 +114,6 @@ extern "C"
     typedef struct vcnl4010_config
     {
         i2c_master_bus_handle_t bus_handle;
-        uint16_t i2c_address;
         uint32_t scl_speed_hz;
 
         bool self_timed;

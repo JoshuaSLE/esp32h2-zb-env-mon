@@ -1,5 +1,7 @@
 #pragma once
 
+#define VCNL4010_I2C_ADDR 0x13
+
 #define VCNL4010_REG_COMMAND 0x80
 #define VCNL4010_REG_PRODUCT_ID 0x81
 #define VCNL4010_REG_PROX_RATE 0x82

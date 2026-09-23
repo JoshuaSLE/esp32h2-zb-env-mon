@@ -30,12 +30,14 @@ extern "C"
      * @brief Display show readings.
      *
      * @param panel_handle Display panel handle.
-     * @param pressure Pressure (Pa).
-     * @param temp Temperature (C).
-     * @param humidity Humidity (%).
+     * @param temp_c Temperature (C).
+     * @param humidity_pct Relative humidity (%).
+     * @param pressure_hpa Pressure (hPa).
      * @return esp_err_t
      */
-    esp_err_t display_show_readings(esp_lcd_panel_handle_t panel_handle, float pressure, float humidity, float temp);
+    /* ---- FIX: parameter order now matches display.c ---- */
+    esp_err_t display_show_readings(esp_lcd_panel_handle_t panel_handle,
+                                    float temp_c, float humidity_pct, float pressure_hpa);
 
     /**
      * @brief Display off on.

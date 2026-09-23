@@ -2,19 +2,20 @@
 #include "bme280.h"
 #include "display.h"
 #include "vcnl4010.h"
+#include "vcnl4010_def.h"
 #include "zigbee.h"
 
 #include "driver/gpio.h"
 #include "esp_bit_defs.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "esp_task.h"
 
 #define BME280_SAMPLE_INTERVAL_MS (60 * 1000)
 
 static const char *TAG = "sensor_manager";
 
-static QueueHandle_t zigbee_queue = NULL;
 static TaskHandle_t presence_task_handle = NULL;
 
 static portMUX_TYPE reading_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -28,21 +29,15 @@ static bme280_data_t cached_reading = {0};
 
 static void IRAM_ATTR vcnl4010_isr_handler(void *arg)
 {
+    gpio_intr_disable(CONFIG_APP_VCNL4010_INT_GPIO);
+
     BaseType_t higher_priority_task_woken = pdFALSE;
     vTaskNotifyGiveFromISR(presence_task_handle, &higher_priority_task_woken);
     portYIELD_FROM_ISR(higher_priority_task_woken);
 }
 
-static void post_zigbee_event(const sensor_event_t *evt)
-{
-    if (zigbee_queue != NULL)
-    {
-        xQueueSend(zigbee_queue, evt, 0);
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Periodic BME280 Sampling Task (System Tick Driven)
+// Periodic BME280 Sampling Task
 // ---------------------------------------------------------------------------
 static void bme280_task(void *pvParameters)
 {
@@ -51,7 +46,6 @@ static void bme280_task(void *pvParameters)
 
     while (1)
     {
-        // Blocks until exactly 60 seconds have passed since the last wake up
         vTaskDelayUntil(&last_wake_time, sample_interval);
 
         esp_err_t err = bme280_trigger_measurement(bme280_handle);
@@ -76,12 +70,10 @@ static void bme280_task(void *pvParameters)
 
         zigbee_report_bme280(&reading);
 
-        post_zigbee_event(&(sensor_event_t){
-            .type = SENSOR_EVENT_BME280_UPDATED,
-            .temp = reading.temp,
-            .hum = reading.hum,
-            .press = reading.press,
-        });
+        if (presence_task_handle)
+        {
+            xTaskNotifyGive(presence_task_handle);
+        }
     }
 }
 
@@ -93,43 +85,54 @@ static void presence_task(void *pvParameters)
     TickType_t display_off_target_tick = 0;
     bool display_is_on = true;
 
-    // Initial boot read
+    // Initial boot read (unchanged)
     if (bme280_trigger_measurement(bme280_handle) == ESP_OK)
     {
-        bme280_read_data(bme280_handle, &cached_reading);
-        display_show_readings(display_handle, cached_reading.temp, cached_reading.hum, cached_reading.press);
-        reading_dirty = false;
+        bme280_data_t reading;
+        if (bme280_read_data(bme280_handle, &reading) == ESP_OK)
+        {
+            portENTER_CRITICAL(&reading_lock);
+            cached_reading = reading;
+            reading_dirty = false;
+            portEXIT_CRITICAL(&reading_lock);
+
+            display_show_readings(display_handle, reading.temp, reading.hum, reading.press);
+        }
     }
 
     display_off_target_tick = xTaskGetTickCount() + pdMS_TO_TICKS(CONFIG_APP_DISPLAY_TIMEOUT_MS);
 
     while (1)
     {
-        // 1000ms timeout allows checking BME280 updates even without motion
-        uint32_t motion_detected = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
+        TickType_t wait_ticks = display_is_on ? pdMS_TO_TICKS(500) : portMAX_DELAY;
+        uint32_t notified = ulTaskNotifyTake(pdTRUE, wait_ticks);
         TickType_t now_ticks = xTaskGetTickCount();
 
-        if (motion_detected > 0)
-        {
-            uint8_t int_status = 0;
-            vcnl4010_clear_interrupt(vcnl4010_handle, &int_status);
+        uint8_t int_status = 0;
+        bool motion_detected = false;
 
+        if (notified > 0)
+        {
+            esp_err_t int_err = vcnl4010_clear_interrupt(vcnl4010_handle, &int_status);
+            gpio_intr_enable(CONFIG_APP_VCNL4010_INT_GPIO);
+            motion_detected = (int_err == ESP_OK) && (int_status & VCNL4010_INT_STATUS_HIGH);
+        }
+
+        if (motion_detected)
+        {
             if (!display_is_on)
             {
                 display_on(display_handle);
                 display_is_on = true;
 
-                // Force a redraw so the screen isn't blank on wake
                 portENTER_CRITICAL(&reading_lock);
                 reading_dirty = true;
                 portEXIT_CRITICAL(&reading_lock);
             }
 
             display_off_target_tick = now_ticks + pdMS_TO_TICKS(CONFIG_APP_DISPLAY_TIMEOUT_MS);
-            post_zigbee_event(&(sensor_event_t){.type = SENSOR_EVENT_PRESENCE_DETECTED});
         }
 
-        // Redraw whenever new data arrives while display is active
         if (display_is_on)
         {
             bool need_redraw;
@@ -147,7 +150,6 @@ static void presence_task(void *pvParameters)
             }
         }
 
-        // Check timeout
         if (display_is_on && (now_ticks >= display_off_target_tick))
         {
             if (display_off(display_handle) == ESP_OK)
@@ -158,7 +160,8 @@ static void presence_task(void *pvParameters)
     }
 }
 
-esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_handle_t panel_handle, QueueHandle_t zb_queue)
+esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle,
+                              esp_lcd_panel_handle_t panel_handle)
 {
     if (!bus_handle || !panel_handle)
     {
@@ -166,7 +169,6 @@ esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_
     }
 
     display_handle = panel_handle;
-    zigbee_queue = zb_queue;
 
     bme280_config_t bme_cfg = {
         .bus_handle = bus_handle,
@@ -189,7 +191,7 @@ esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_
         .led_current = VCNL4010_LED_CURRENT_100mA,
         .prox_rate = VCNL4010_PROX_RATE_15_625,
         .interrupt = {
-            .count = VCNL4010_INT_COUNT_1,
+            .count = VCNL4010_INT_COUNT_4,
             .enable_threshold = true,
             .low_threshold = 0,
             .high_threshold = CONFIG_APP_VCNL4010_PROX_THRESHOLD,
@@ -205,9 +207,14 @@ esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_NEGEDGE,
+        .intr_type = GPIO_INTR_LOW_LEVEL,
     };
     ESP_RETURN_ON_ERROR(gpio_config(&io_conf), TAG, "gpio config failed");
+
+    ESP_RETURN_ON_ERROR(gpio_wakeup_enable(CONFIG_APP_VCNL4010_INT_GPIO, GPIO_INTR_LOW_LEVEL),
+                        TAG, "gpio wakeup enable failed");
+    ESP_RETURN_ON_ERROR(esp_sleep_enable_gpio_wakeup(),
+                        TAG, "sleep gpio wakeup enable failed");
 
     esp_err_t isr_err = gpio_install_isr_service(0);
     if (isr_err != ESP_OK && isr_err != ESP_ERR_INVALID_STATE)

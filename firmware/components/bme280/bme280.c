@@ -78,12 +78,32 @@ static esp_err_t bme280_wait_status_bit_cleared(bme280_handle_t handle, uint8_t 
     return ESP_ERR_TIMEOUT;
 }
 
+static esp_err_t bme280_wait_status_bit_set(bme280_handle_t handle, uint8_t bit_mask, uint32_t timeout_ms)
+{
+    TickType_t start_ticks = xTaskGetTickCount();
+    TickType_t timeout_ticks = pdMS_TO_TICKS(timeout_ms);
+    uint8_t status = 0;
+
+    do
+    {
+        ESP_RETURN_ON_ERROR(bme280_reg_read(handle, BME280_REG_STATUS, &status, 1), TAG, "failed reading status");
+
+        if ((status & bit_mask) != 0)
+        {
+            return ESP_OK;
+        }
+
+        esp_rom_delay_us(500);
+    } while ((xTaskGetTickCount() - start_ticks) < timeout_ticks);
+
+    return ESP_ERR_TIMEOUT;
+}
+
 static esp_err_t bme280_read_calibration_data(bme280_handle_t handle)
 {
     uint8_t calib1[26];
     uint8_t calib2[7];
 
-    // Read 0x88 to 0xA1 (Temperature, Pressure, H1)
     ESP_RETURN_ON_ERROR(bme280_reg_read(handle, BME280_REG_CALIB00, calib1, 26), TAG, "failed reading calib1");
 
     handle->comp.dig_T1 = (uint16_t)(calib1[1] << 8 | calib1[0]);
@@ -102,7 +122,6 @@ static esp_err_t bme280_read_calibration_data(bme280_handle_t handle)
 
     handle->comp.dig_H1 = calib1[25];
 
-    // Read 0xE1 to 0xE7 (H2 to H6)
     ESP_RETURN_ON_ERROR(bme280_reg_read(handle, BME280_REG_CALIB26, calib2, 7), TAG, "failed reading calib2");
 
     handle->comp.dig_H2 = (int16_t)(calib2[1] << 8 | calib2[0]);
@@ -283,12 +302,10 @@ esp_err_t bme280_trigger_measurement(bme280_handle_t handle)
     ESP_RETURN_ON_ERROR(bme280_reg_write(handle, BME280_REG_CTRL_MEAS, handle->ctrl_meas),
                         TAG, "failed to trigger forced measurement");
 
-    // Empirically determined delay (datasheet has no documented forced-mode
-    // wake time). 1us was insufficient in testing, 5us worked reliably;
-    // doubled here for margin.
-    esp_rom_delay_us(10);
+    ESP_RETURN_ON_ERROR(bme280_wait_status_bit_set(handle, BME280_STATUS_MEAS, 20),
+                        TAG, "conversion never started");
 
-    return bme280_wait_until_measuring_done(handle, CONFIG_APP_I2C_TIMEOUT_MS);
+    return bme280_wait_status_bit_cleared(handle, BME280_STATUS_MEAS, CONFIG_APP_I2C_TIMEOUT_MS);
 }
 
 esp_err_t bme280_read_data(bme280_handle_t handle, bme280_data_t *data)
@@ -305,7 +322,6 @@ esp_err_t bme280_read_data(bme280_handle_t handle, bme280_data_t *data)
     int32_t adc_T = (int32_t)(((uint32_t)raw[3] << 12) | ((uint32_t)raw[4] << 4) | ((uint32_t)raw[5] >> 4));
     int32_t adc_H = (int32_t)(((uint32_t)raw[6] << 8) | ((uint32_t)raw[7]));
 
-    // Must calculate Temperature FIRST to update t_fine
     int32_t temp_raw = bme280_comp_temp(handle, adc_T);
     uint32_t press_raw = bme280_comp_press(handle, adc_P);
     uint32_t hum_raw = bme280_comp_hum(handle, adc_H);

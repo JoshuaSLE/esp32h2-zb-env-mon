@@ -49,7 +49,8 @@ esp_err_t vcnl4010_init(const vcnl4010_config_t *config, vcnl4010_handle_t *ret_
 
     uint8_t product_id = 0;
     ESP_GOTO_ON_ERROR(vcnl4010_reg_read(dev, VCNL4010_REG_PRODUCT_ID, &product_id, 1), fail, TAG, "Failed to read product id");
-    if (ret != ESP_OK || (product_id & 0xF0) != (VCNL4010_PRODUCT_ID & 0xF0))
+
+    if ((product_id & 0xF0) != (VCNL4010_PRODUCT_ID & 0xF0))
     {
         ret = ESP_ERR_NOT_FOUND;
         goto fail;

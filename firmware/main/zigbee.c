@@ -1,10 +1,14 @@
 #include "zigbee.h"
 #include "alarm_timer.h"
-#include "sensor_manager.h"
+
+#include <math.h>
+#include <string.h>
 
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_zigbee.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "zigbee";
@@ -25,7 +29,8 @@ static const char *TAG = "zigbee";
 #define ESP_MODEL_IDENTIFIER ZCL_STRING_ATTR(model_id, CONFIG_APP_ZB_MODEL_IDENTIFIER, 32)
 
 #define ENV_MONITOR_EP_ID 1
-#define ZCL_MEASURED_VALUE_ATTR_ID 0x0000
+
+static SemaphoreHandle_t s_stack_ready_sem = NULL;
 
 static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 {
@@ -161,7 +166,6 @@ static esp_err_t create_data_model(void)
     ezb_zcl_cluster_desc_t press_desc = ezb_zcl_pressure_measurement_create_cluster_desc(&press_cfg, EZB_ZCL_CLUSTER_SERVER);
     ezb_af_endpoint_add_cluster_desc(ep_desc, press_desc);
 
-    /* Add endpoint and register device */
     ezb_af_device_add_endpoint_desc(dev_desc, ep_desc);
 
     esp_err_t err = ezb_af_device_desc_register(dev_desc);
@@ -178,8 +182,8 @@ static esp_err_t create_data_model(void)
 esp_err_t esp_zigbee_setup_commissioning(void)
 {
     ezb_aps_secur_enable_distributed_security(false);
-    ESP_RETURN_ON_ERROR(ezb_app_signal_add_handler(esp_zigbee_app_signal_handler), TAG, "Failed to add the zigbee signal handler");
-
+    ESP_RETURN_ON_ERROR(ezb_app_signal_add_handler(esp_zigbee_app_signal_handler),
+                        TAG, "Failed to add the zigbee signal handler");
     return ESP_OK;
 }
 
@@ -212,10 +216,14 @@ static void zigbee_stack_main_task(void *pvParameters)
 
     ESP_ERROR_CHECK(esp_zigbee_start(false));
 
+    if (s_stack_ready_sem)
+    {
+        xSemaphoreGive(s_stack_ready_sem);
+    }
+
     esp_zigbee_launch_mainloop();
 
     esp_zigbee_deinit();
-
     vTaskDelete(NULL);
 }
 
@@ -223,30 +231,73 @@ esp_err_t zigbee_init(void)
 {
     ESP_RETURN_ON_ERROR(nvs_flash_init(), TAG, "Failed to init the nvs flash partition");
 
+    s_stack_ready_sem = xSemaphoreCreateBinary();
+    if (!s_stack_ready_sem)
+    {
+        ESP_LOGE(TAG, "Failed to create stack-ready semaphore");
+        return ESP_ERR_NO_MEM;
+    }
+
     ESP_LOGI(TAG, "Starting ESP Zigbee Stack task...");
     BaseType_t ret = xTaskCreate(zigbee_stack_main_task, "Zigbee_main", 4096, NULL, 5, NULL);
+    if (ret != pdPASS)
+    {
+        ESP_LOGE(TAG, "Failed to create Zigbee task");
+        vSemaphoreDelete(s_stack_ready_sem);
+        s_stack_ready_sem = NULL;
+        return ESP_FAIL;
+    }
 
-    return ret == pdPASS ? ESP_OK : ESP_FAIL;
+    if (xSemaphoreTake(s_stack_ready_sem, pdMS_TO_TICKS(10000)) != pdTRUE)
+    {
+        ESP_LOGE(TAG, "Zigbee stack did not become ready in time");
+        return ESP_ERR_TIMEOUT;
+    }
+
+    ESP_LOGI(TAG, "Zigbee stack ready");
+    return ESP_OK;
 }
 
 void zigbee_report_bme280(const bme280_data_t *reading)
 {
-    if (reading == NULL)
+    if (reading == NULL || isnan(reading->temp) || isnan(reading->hum) || isnan(reading->press))
     {
+        ESP_LOGW(TAG, "Skip BME280 report: NaN reading");
+        return;
+    }
+
+    /* Reject anything outside the ranges declared on the clusters, otherwise
+     * the attribute setter will return an error and we would silently drop
+     * one of the three reports anyway. */
+    if (reading->temp < -40.0f || reading->temp > 85.0f ||
+        reading->hum < 0.0f || reading->hum > 100.0f ||
+        reading->press < 300.0f || reading->press > 1100.0f)
+    {
+        ESP_LOGW(TAG, "Skip BME280 report: out of range T=%.2f H=%.2f P=%.2f",
+                 reading->temp, reading->hum, reading->press);
         return;
     }
 
     esp_zigbee_lock_acquire(portMAX_DELAY);
 
-    int16_t temp_zcl = (int16_t)(reading->temp * 100.0f); // 0.1 °C units
-    uint16_t hum_zcl = (uint16_t)(reading->hum * 100.0f); // 0.01 %RH units
-    int16_t press_zcl = (int16_t)(reading->press);        // 0.01 hPA uints
+    /* Temperature MeasuredValue: int16, 0.01 °C
+     * Humidity    MeasuredValue: uint16, 0.01 %RH
+     * Pressure    MeasuredValue: int16, 0.1 kPa (== hPa, 1:1) */
+    int16_t temp_zcl = (int16_t)(reading->temp * 100.0f);
+    uint16_t hum_zcl = (uint16_t)(reading->hum * 100.0f);
+    int16_t press_zcl = (int16_t)(reading->press);
 
-    ezb_zcl_status_t temp_attr = ezb_zcl_set_attr_value(ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER, EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &temp_zcl, false);
+    ezb_zcl_status_t temp_attr = ezb_zcl_set_attr_value(
+        ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER,
+        EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &temp_zcl, false);
 
-    ezb_zcl_status_t hum_attr = ezb_zcl_set_attr_value(ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER, EZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &hum_zcl, false);
+    ezb_zcl_status_t hum_attr = ezb_zcl_set_attr_value(
+        ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER,
+        EZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &hum_zcl, false);
 
-    ezb_zcl_status_t press_attr = ezb_zcl_set_attr_value(ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER, EZB_ZCL_ATTR_PRESSURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &press_zcl, false);
+    ezb_zcl_status_t press_attr = ezb_zcl_set_attr_value(
+        ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER,
+        EZB_ZCL_ATTR_PRESSURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &press_zcl, false);
 
     if (temp_attr != EZB_ZCL_STATUS_SUCCESS || hum_attr != EZB_ZCL_STATUS_SUCCESS || press_attr != EZB_ZCL_STATUS_SUCCESS || !ezb_bdb_dev_joined())
     {

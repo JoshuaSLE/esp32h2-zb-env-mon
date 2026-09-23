@@ -10,6 +10,9 @@ CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
 # --- Keep tick rate low so light sleep isn't interrupted ---
 CONFIG_FREERTOS_HZ=100
 
+# -- Task ---
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+
 # --- Let flash sleep ---
 CONFIG_ESP_SLEEP_FLASH_LEAKAGE_WORKAROUND=y
 

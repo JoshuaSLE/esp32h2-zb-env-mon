@@ -8,12 +8,11 @@
 #include "esp_log.h"
 #include "esp_zigbee.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "zigbee";
 
-#define ESP_ZIGBEE_STORAGE_PARTITION_NAME "nvs"
+#define ESP_ALARM_TIMER_SCHEDULE_MS 5000
 
 #define ZCL_STRING_ATTR(buf_name, str_val, max_len) ({ \
     static char buf_name[max_len + 1];                 \
@@ -25,12 +24,10 @@ static const char *TAG = "zigbee";
     buf_name;                                          \
 })
 
+#define ESP_ZIGBEE_STORAGE_PARTITION_NAME "nvs"
+#define ENV_MONITOR_EP_ID 1
 #define ESP_MANUFACTURER_NAME ZCL_STRING_ATTR(mfg_name, CONFIG_APP_ZB_MANUFACTURER_NAME, 32)
 #define ESP_MODEL_IDENTIFIER ZCL_STRING_ATTR(model_id, CONFIG_APP_ZB_MODEL_IDENTIFIER, 32)
-
-#define ENV_MONITOR_EP_ID 1
-
-static SemaphoreHandle_t s_stack_ready_sem = NULL;
 
 static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 {
@@ -46,17 +43,22 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
     switch (signal_type)
     {
     case EZB_ZDO_SIGNAL_SKIP_STARTUP:
+    {
         ESP_LOGI(TAG, "Initialize Zigbee stack");
+        ezb_nwk_set_rx_on_when_idle(false);
         ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_INITIALIZATION);
-        break;
+    }
+    break;
 
     case EZB_BDB_SIGNAL_DEVICE_FIRST_START:
     case EZB_BDB_SIGNAL_DEVICE_REBOOT:
     {
         ezb_bdb_comm_status_t status = *((ezb_bdb_comm_status_t *)ezb_app_signal_get_params(app_signal));
+
         if (status == EZB_BDB_STATUS_SUCCESS)
         {
             ESP_LOGI(TAG, "Device started up in %s factory-reset mode", ezb_bdb_is_factory_new() ? "" : "non-");
+
             if (ezb_bdb_is_factory_new())
             {
                 ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_NETWORK_STEERING);
@@ -69,7 +71,8 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
         else
         {
             ESP_LOGW(TAG, "%s failed with status(0x%02x), retrying initialization...", ezb_app_signal_to_string(signal_type), status);
-            alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_INITIALIZATION, 1000);
+
+            alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_INITIALIZATION, ESP_ALARM_TIMER_SCHEDULE_MS);
         }
     }
     break;
@@ -77,6 +80,7 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
     case EZB_BDB_SIGNAL_STEERING:
     {
         ezb_bdb_comm_status_t status = *((ezb_bdb_comm_status_t *)ezb_app_signal_get_params(app_signal));
+
         if (status == EZB_BDB_STATUS_SUCCESS)
         {
             ESP_LOGI(TAG, "Network steering completed");
@@ -84,7 +88,8 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
         else
         {
             ESP_LOGW(TAG, "Failed to steering network with status(0x%02x)", status);
-            alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_NETWORK_STEERING, 1000);
+
+            alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_NETWORK_STEERING, ESP_ALARM_TIMER_SCHEDULE_MS);
         }
     }
     break;
@@ -93,6 +98,7 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
         ESP_LOGI(TAG, "Zigbee APP Signal: %s (type: 0x%02x)", ezb_app_signal_to_string(signal_type), signal_type);
         break;
     }
+
     return true;
 }
 
@@ -184,6 +190,7 @@ esp_err_t esp_zigbee_setup_commissioning(void)
     ezb_aps_secur_enable_distributed_security(false);
     ESP_RETURN_ON_ERROR(ezb_app_signal_add_handler(esp_zigbee_app_signal_handler),
                         TAG, "Failed to add the zigbee signal handler");
+    ezb_nwk_set_rx_on_when_idle(false);
     return ESP_OK;
 }
 
@@ -208,22 +215,16 @@ static void zigbee_stack_main_task(void *pvParameters)
 
     ESP_ERROR_CHECK(esp_zigbee_init(&config));
 
-    ezb_nwk_set_rx_on_when_idle(false);
-
     ESP_ERROR_CHECK(esp_zigbee_setup_commissioning());
 
     ESP_ERROR_CHECK(create_data_model());
 
     ESP_ERROR_CHECK(esp_zigbee_start(false));
 
-    if (s_stack_ready_sem)
-    {
-        xSemaphoreGive(s_stack_ready_sem);
-    }
-
     esp_zigbee_launch_mainloop();
 
     esp_zigbee_deinit();
+
     vTaskDelete(NULL);
 }
 
@@ -231,30 +232,16 @@ esp_err_t zigbee_init(void)
 {
     ESP_RETURN_ON_ERROR(nvs_flash_init(), TAG, "Failed to init the nvs flash partition");
 
-    s_stack_ready_sem = xSemaphoreCreateBinary();
-    if (!s_stack_ready_sem)
-    {
-        ESP_LOGE(TAG, "Failed to create stack-ready semaphore");
-        return ESP_ERR_NO_MEM;
-    }
-
     ESP_LOGI(TAG, "Starting ESP Zigbee Stack task...");
     BaseType_t ret = xTaskCreate(zigbee_stack_main_task, "Zigbee_main", 4096, NULL, 5, NULL);
     if (ret != pdPASS)
     {
         ESP_LOGE(TAG, "Failed to create Zigbee task");
-        vSemaphoreDelete(s_stack_ready_sem);
-        s_stack_ready_sem = NULL;
         return ESP_FAIL;
     }
 
-    if (xSemaphoreTake(s_stack_ready_sem, pdMS_TO_TICKS(10000)) != pdTRUE)
-    {
-        ESP_LOGE(TAG, "Zigbee stack did not become ready in time");
-        return ESP_ERR_TIMEOUT;
-    }
-
     ESP_LOGI(TAG, "Zigbee stack ready");
+
     return ESP_OK;
 }
 
@@ -266,9 +253,6 @@ void zigbee_report_bme280(const bme280_data_t *reading)
         return;
     }
 
-    /* Reject anything outside the ranges declared on the clusters, otherwise
-     * the attribute setter will return an error and we would silently drop
-     * one of the three reports anyway. */
     if (reading->temp < -40.0f || reading->temp > 85.0f ||
         reading->hum < 0.0f || reading->hum > 100.0f ||
         reading->press < 300.0f || reading->press > 1100.0f)
@@ -280,9 +264,6 @@ void zigbee_report_bme280(const bme280_data_t *reading)
 
     esp_zigbee_lock_acquire(portMAX_DELAY);
 
-    /* Temperature MeasuredValue: int16, 0.01 °C
-     * Humidity    MeasuredValue: uint16, 0.01 %RH
-     * Pressure    MeasuredValue: int16, 0.1 kPa (== hPa, 1:1) */
     int16_t temp_zcl = (int16_t)(reading->temp * 100.0f);
     uint16_t hum_zcl = (uint16_t)(reading->hum * 100.0f);
     int16_t press_zcl = (int16_t)(reading->press);

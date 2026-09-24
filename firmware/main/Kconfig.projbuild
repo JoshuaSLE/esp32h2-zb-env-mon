@@ -50,7 +50,8 @@ menu "Application Configuration"
 
         config APP_BME280_READ_INTERVAL_MS
             int "BME280 read interval (ms)"
-            default 10000
+            range 60000 300000
+            default 60000
             help
                 How often to poll temperature/humidity/pressure.
     endmenu

@@ -12,8 +12,6 @@
 #include "esp_sleep.h"
 #include "esp_task.h"
 
-#define BME280_SAMPLE_INTERVAL_MS (60 * 1000)
-
 static const char *TAG = "sensor_manager";
 
 static TaskHandle_t presence_task_handle = NULL;
@@ -43,7 +41,7 @@ static void IRAM_ATTR vcnl4010_isr_handler(void *arg)
 static void bme280_task(void *pvParameters)
 {
     TickType_t last_wake_time = xTaskGetTickCount();
-    const TickType_t sample_interval = pdMS_TO_TICKS(BME280_SAMPLE_INTERVAL_MS);
+    const TickType_t sample_interval = pdMS_TO_TICKS(CONFIG_APP_BME280_READ_INTERVAL_MS);
 
     while (1)
     {

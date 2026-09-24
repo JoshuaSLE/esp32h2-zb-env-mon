@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"name": "firmware",
+			"path": "firmware"
+		},
+		{
+			"name": "ZigbeeBME280",
+			"path": "."
+		}
+	],
+	"settings": {
+		"cmake.configureOnOpen": false,
+		"cmake.autoSelectActiveFolder": false,
+		"cmake.autoDetectSourceDirectory": false
+	}
+}

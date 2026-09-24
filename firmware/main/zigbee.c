@@ -29,7 +29,7 @@ static const char *TAG = "zigbee";
 #define ESP_MANUFACTURER_NAME ZCL_STRING_ATTR(mfg_name, CONFIG_APP_ZB_MANUFACTURER_NAME, 32)
 #define ESP_MODEL_IDENTIFIER ZCL_STRING_ATTR(model_id, CONFIG_APP_ZB_MODEL_IDENTIFIER, 32)
 
-static bool is_connected = false;
+static volatile bool is_connected = false;
 
 static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 {
@@ -41,7 +41,6 @@ static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
 {
     ezb_app_signal_type_t signal_type = ezb_app_signal_get_type(app_signal);
-    is_connected = false;
 
     switch (signal_type)
     {
@@ -49,6 +48,14 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
     {
         ESP_LOGI(TAG, "Initialize Zigbee stack");
         ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_INITIALIZATION);
+    }
+    break;
+
+    case EZB_ZDO_SIGNAL_LEAVE:
+    {
+        is_connected = false;
+        const ezb_zdo_signal_leave_params_t *leave_params = ezb_app_signal_get_params(app_signal);
+        ESP_LOGI(TAG, "Left network successfully with type(0x%02x)", leave_params->leave_type);
     }
     break;
 

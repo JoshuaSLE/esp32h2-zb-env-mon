@@ -1,6 +1,6 @@
 #include "display.h"
 #include "i2c_bus.h"
-#include "sensor_manager.h"
+#include "task_manager.h"
 #include "zigbee.h"
 
 #include "esp_check.h"

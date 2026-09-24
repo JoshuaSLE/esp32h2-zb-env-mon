@@ -23,7 +23,7 @@ static bme280_handle_t bme280_handle = NULL;
 static vcnl4010_handle_t vcnl4010_handle = NULL;
 static esp_lcd_panel_handle_t display_handle = NULL;
 
-static uint32_t display_timeout_ms = CONFIG_APP_DISPLAY_TIMEOUT_MS;
+static uint32_t display_timeout_ms = 10000;
 static bme280_data_t cached_reading = {0};
 
 static void IRAM_ATTR vcnl4010_isr_handler(void *arg)
@@ -187,7 +187,7 @@ esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle,
         .self_timed = true,
         .prox_enabled = true,
         .led_current = VCNL4010_LED_CURRENT_100mA,
-        .prox_rate = VCNL4010_PROX_RATE_15_625,
+        .prox_rate = VCNL4010_PROX_RATE_1_95,
         .interrupt = {
             .count = VCNL4010_INT_COUNT_4,
             .enable_threshold = true,

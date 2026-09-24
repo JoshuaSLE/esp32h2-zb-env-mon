@@ -4,11 +4,19 @@ menu "Application Configuration"
         config APP_INPUT_RST_GPIO
             int "Reset button GPIO number"
             range 0 27
-            default 5
+            default 12
             help
                 GPIO wired to the physical reset/pairing button. Short press
                 triggers Zigbee Identify; long press (see firmware) triggers
                 a factory reset / leave-network action.
+
+        config APP_INPUT_DISP_BTN_GPIO
+            int "Display button GPIO number"
+            range 0 27
+            default 22
+            help
+                GPIO wired to the push button for waking the display and
+                cycling through display timeouts.
     endmenu
 
     menu "I2C Bus"
@@ -80,50 +88,6 @@ menu "Application Configuration"
             default 0x3C
             help
                 0x3C or 0x3D depending on SA0/ADDR pin wiring.
-
-        config APP_DISPLAY_TIMEOUT_MIN_MS
-            int "Minimum display timeout (ms)"
-            default 5000
-            help
-                Lower bound accepted for display auto-off timeout.
-
-        config APP_DISPLAY_TIMEOUT_MAX_MS
-            int "Maximum display timeout (ms)"
-            default 60000
-            help
-                Upper bound accepted for display auto-off timeout.
-
-        config APP_DISPLAY_TIMEOUT_MS
-            int "Display auto-off timeout (ms)"
-            range APP_DISPLAY_TIMEOUT_MIN_MS APP_DISPLAY_TIMEOUT_MAX_MS
-            default 15000
-            help
-                How long the OLED stays on after a proximity wake before
-                powering off again.
-    endmenu
-
-    menu "Rotary Encoder"
-        config APP_ENCODER_INVERT
-            bool "Encoder invert"
-            default n
-            help
-                Swap the effective rotation direction if turning the knob
-                clockwise decreases the value instead of increasing it
-                (depends on how A/B are wired).
-
-        config APP_ENCODER_A_GPIO
-            int "Encoder A GPIO pin"
-            range 0 27
-            default 12
-            help
-                GPIO wired to the rotary encoder's A (CLK) phase output.
-
-        config APP_ENCODER_B_GPIO
-            int "Encoder B GPIO pin"
-            range 0 27
-            default 22
-            help
-                GPIO wired to the rotary encoder's B (DT) phase output.
     endmenu
 
     menu "Zigbee Config"
@@ -134,6 +98,18 @@ menu "Application Configuration"
         config APP_ZB_MODEL_IDENTIFIER
             string "Zigbee model identifier"
             default "ESP32H2-EnvMon"
+
+        config APP_ZB_PRIMARY_CHANNEL_MASK
+            hex "Primary channel mask"
+            default 0x02108800
+            help
+                Bitmask of primary channels to scan (0x02108800 = channels 11, 15, 20, 25).
+
+        config APP_ZB_SECONDARY_CHANNEL_MASK
+            hex "Secondary channel mask"
+            default 0x05EF7000
+            help
+                Bitmask of secondary channels (remaining channels 11-26).
     endmenu
 
 endmenu

@@ -35,7 +35,6 @@ void app_main(void)
     ESP_ERROR_CHECK(app_power_save_init());
 
     ESP_LOGI(TAG, "Initializing system peripherals...");
-
     ESP_ERROR_CHECK(i2c_bus_init(&i2c_bus_handle));
     ESP_ERROR_CHECK(display_init(i2c_bus_handle, &panel_handle));
 

@@ -29,6 +29,8 @@ static const char *TAG = "zigbee";
 #define ESP_MANUFACTURER_NAME ZCL_STRING_ATTR(mfg_name, CONFIG_APP_ZB_MANUFACTURER_NAME, 32)
 #define ESP_MODEL_IDENTIFIER ZCL_STRING_ATTR(model_id, CONFIG_APP_ZB_MODEL_IDENTIFIER, 32)
 
+static bool is_connected = false;
+
 static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 {
     esp_zigbee_lock_acquire(portMAX_DELAY);
@@ -39,13 +41,13 @@ static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
 {
     ezb_app_signal_type_t signal_type = ezb_app_signal_get_type(app_signal);
+    is_connected = false;
 
     switch (signal_type)
     {
     case EZB_ZDO_SIGNAL_SKIP_STARTUP:
     {
         ESP_LOGI(TAG, "Initialize Zigbee stack");
-        ezb_nwk_set_rx_on_when_idle(false);
         ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_INITIALIZATION);
     }
     break;
@@ -66,6 +68,7 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
             else
             {
                 ESP_LOGI(TAG, "Rebooted with existing network pairing");
+                is_connected = true;
             }
         }
         else
@@ -84,6 +87,7 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
         if (status == EZB_BDB_STATUS_SUCCESS)
         {
             ESP_LOGI(TAG, "Network steering completed");
+            is_connected = true;
         }
         else
         {
@@ -188,6 +192,8 @@ static esp_err_t create_data_model(void)
 esp_err_t esp_zigbee_setup_commissioning(void)
 {
     ezb_aps_secur_enable_distributed_security(false);
+    ESP_RETURN_ON_ERROR(ezb_bdb_set_primary_channel_set((uint32_t)CONFIG_APP_ZB_PRIMARY_CHANNEL_MASK), TAG, "Failed to set the primary chanel mask");
+    ESP_RETURN_ON_ERROR(ezb_bdb_set_secondary_channel_set((uint32_t)CONFIG_APP_ZB_SECONDARY_CHANNEL_MASK), TAG, "Failed to set the secondary chanel mask");
     ESP_RETURN_ON_ERROR(ezb_app_signal_add_handler(esp_zigbee_app_signal_handler),
                         TAG, "Failed to add the zigbee signal handler");
     ezb_nwk_set_rx_on_when_idle(false);
@@ -201,7 +207,7 @@ static void zigbee_stack_main_task(void *pvParameters)
             .device_type = EZB_NWK_DEVICE_TYPE_END_DEVICE,
             .install_code_policy = false,
             .zed_config = {
-                .ed_timeout = EZB_NWK_ED_TIMEOUT_2MIN,
+                .ed_timeout = EZB_NWK_ED_TIMEOUT_64MIN,
                 .keep_alive = 3000,
             },
         },
@@ -247,9 +253,9 @@ esp_err_t zigbee_init(void)
 
 void zigbee_report_bme280(const bme280_data_t *reading)
 {
-    if (reading == NULL || isnan(reading->temp) || isnan(reading->hum) || isnan(reading->press))
+    if (reading == NULL || !is_connected || isnan(reading->temp) || isnan(reading->hum) || isnan(reading->press))
     {
-        ESP_LOGW(TAG, "Skip BME280 report: NaN reading");
+        ESP_LOGW(TAG, "Skip BME280 report");
         return;
     }
 

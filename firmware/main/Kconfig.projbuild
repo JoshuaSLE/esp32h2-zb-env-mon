@@ -9,14 +9,14 @@ menu "Application Configuration"
                 GPIO wired to the physical reset/pairing button. Short press
                 triggers Zigbee Identify; long press (see firmware) triggers
                 a factory reset / leave-network action.
-
-        config APP_INPUT_DISP_BTN_GPIO
-            int "Display button GPIO number"
+                
+        config APP_INPUT_DISP_TIMEOUT_BTN_GPIO
+            int "Display timeout button GPIO number"
             range 0 27
             default 22
             help
-                GPIO wired to the push button for waking the display and
-                cycling through display timeouts.
+                Push button for waking the display and cycling through
+                display timeouts (10s → 30s → 60s).
     endmenu
 
     menu "I2C Bus"

@@ -17,9 +17,7 @@ extern "C"
      * @param panel_handle Initialized LCD display handle.
      * @return esp_err_t
      */
-    /* ---- FIX: removed unused zb_queue parameter ---- */
-    esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle,
-                                  esp_lcd_panel_handle_t panel_handle);
+    esp_err_t sensor_manager_init(i2c_master_bus_handle_t bus_handle, esp_lcd_panel_handle_t panel_handle);
 
 #ifdef __cplusplus
 }

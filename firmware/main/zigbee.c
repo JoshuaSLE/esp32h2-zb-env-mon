@@ -1,4 +1,5 @@
 #include "zigbee.h"
+#include "bme280_defs.h"
 #include "alarm_timer.h"
 
 #include <math.h>
@@ -11,6 +12,10 @@
 #include "nvs_flash.h"
 
 static const char *TAG = "zigbee";
+
+#define ZCL_TEMP_UNKNOWN INT16_MIN
+#define ZCL_HUMIDITY_UNKNOWN UINT16_MAX
+#define ZCL_PRESSURE_UNKNOWN INT16_MIN
 
 #define ESP_ALARM_TIMER_SCHEDULE_MS 5000
 
@@ -29,44 +34,74 @@ static const char *TAG = "zigbee";
 #define ESP_MANUFACTURER_NAME ZCL_STRING_ATTR(mfg_name, CONFIG_APP_ZB_MANUFACTURER_NAME, 32)
 #define ESP_MODEL_IDENTIFIER ZCL_STRING_ATTR(model_id, CONFIG_APP_ZB_MODEL_IDENTIFIER, 32)
 
-static volatile bool is_connected = false;
+#define ESP_ZIGBEE_STEERING_RETRY_LIMIT 10
+#define ESP_ZIGBEE_STEERING_RETRY_DELAY_MS 5000
+#define ESP_ZIGBEE_STEERING_RETRY_LONG_MS (10 * 60 * 1000)
+
+static volatile bool zigbee_stack_ready = false;
+static uint8_t steering_retry_count = 0;
 
 static void esp_zigbee_alarm_bdb_commissioning(alarm_timer_arg_t arg)
 {
-    esp_zigbee_lock_acquire(portMAX_DELAY);
-    (void)ezb_bdb_start_top_level_commissioning(arg);
+    if (!esp_zigbee_lock_acquire(pdMS_TO_TICKS(10)))
+    {
+        alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, arg, 10);
+        return;
+    }
+
+    ezb_err_t err = ezb_bdb_start_top_level_commissioning(arg);
+
     esp_zigbee_lock_release();
+
+    if (err != EZB_ERR_NONE)
+    {
+        ESP_LOGW(TAG, "BDB commissioning request failed: %d", err);
+    }
 }
 
 static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
 {
     ezb_app_signal_type_t signal_type = ezb_app_signal_get_type(app_signal);
+    union
+    {
+        const ezb_bdb_signal_simple_params_t *bdb;
+        const ezb_zdo_signal_leave_params_t *leave;
+        const ezb_zdo_signal_leave_indication_params_t *leave_ind;
+        const ezb_zdo_signal_device_annce_params_t *dev_annce;
+        const ezb_zdo_signal_device_update_params_t *dev_upd;
+        const ezb_zdo_signal_device_authorized_params_t *dev_auth;
+        const ezb_zdo_signal_device_unavailable_params_t *dev_unavail;
+        const ezb_nwk_signal_permit_join_status_params_t *permit_join;
+        const ezb_nwk_signal_network_status_params_t *nwk_status;
+        const void *param;
+    } signal_params = {.param = ezb_app_signal_get_params(app_signal)};
 
     switch (signal_type)
     {
     case EZB_ZDO_SIGNAL_SKIP_STARTUP:
     {
         ESP_LOGI(TAG, "Initialize Zigbee stack");
+
         ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_INITIALIZATION);
+
+        zigbee_stack_ready = true;
     }
     break;
 
     case EZB_ZDO_SIGNAL_LEAVE:
     {
-        is_connected = false;
-        const ezb_zdo_signal_leave_params_t *leave_params = ezb_app_signal_get_params(app_signal);
-        ESP_LOGI(TAG, "Left network successfully with type(0x%02x)", leave_params->leave_type);
+        ESP_LOGI(TAG, "Left network, type 0x%02x", signal_params.leave->leave_type);
+
+        zigbee_stack_ready = false;
     }
     break;
 
     case EZB_BDB_SIGNAL_DEVICE_FIRST_START:
     case EZB_BDB_SIGNAL_DEVICE_REBOOT:
     {
-        ezb_bdb_comm_status_t status = *((ezb_bdb_comm_status_t *)ezb_app_signal_get_params(app_signal));
-
-        if (status == EZB_BDB_STATUS_SUCCESS)
+        if (signal_params.bdb->status == EZB_BDB_STATUS_SUCCESS)
         {
-            ESP_LOGI(TAG, "Device started up in %s factory-reset mode", ezb_bdb_is_factory_new() ? "" : "non-");
+            ESP_LOGI(TAG, "Device started up in %sfactory-reset mode", ezb_bdb_is_factory_new() ? "" : "non ");
 
             if (ezb_bdb_is_factory_new())
             {
@@ -75,12 +110,12 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
             else
             {
                 ESP_LOGI(TAG, "Rebooted with existing network pairing");
-                is_connected = true;
+                zigbee_stack_ready = true;
             }
         }
         else
         {
-            ESP_LOGW(TAG, "%s failed with status(0x%02x), retrying initialization...", ezb_app_signal_to_string(signal_type), status);
+            ESP_LOGW(TAG, "%s failed with status(0x%02x), retrying initialization...", ezb_app_signal_to_string(signal_type), signal_params.bdb->status);
 
             alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_INITIALIZATION, ESP_ALARM_TIMER_SCHEDULE_MS);
         }
@@ -89,18 +124,29 @@ static bool esp_zigbee_app_signal_handler(const ezb_app_signal_t *app_signal)
 
     case EZB_BDB_SIGNAL_STEERING:
     {
-        ezb_bdb_comm_status_t status = *((ezb_bdb_comm_status_t *)ezb_app_signal_get_params(app_signal));
-
-        if (status == EZB_BDB_STATUS_SUCCESS)
+        if (signal_params.bdb->status == EZB_BDB_STATUS_SUCCESS)
         {
-            ESP_LOGI(TAG, "Network steering completed");
-            is_connected = true;
+            steering_retry_count = 0;
+
+            ESP_LOGI(TAG, "Joined network: PAN 0x%04hx, channel %d, short address 0x%04hx", ezb_nwk_get_panid(), ezb_nwk_get_current_channel(), ezb_nwk_get_short_address());
         }
         else
         {
-            ESP_LOGW(TAG, "Failed to steering network with status(0x%02x)", status);
+            if (steering_retry_count < ESP_ZIGBEE_STEERING_RETRY_LIMIT)
+            {
+                steering_retry_count++;
 
-            alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_NETWORK_STEERING, ESP_ALARM_TIMER_SCHEDULE_MS);
+                ESP_LOGW(TAG, "Network steering failed (0x%02x), retry %u/%u", signal_params.bdb->status, steering_retry_count, ESP_ZIGBEE_STEERING_RETRY_LIMIT);
+
+                alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_NETWORK_STEERING, ESP_ZIGBEE_STEERING_RETRY_DELAY_MS);
+            }
+            else
+            {
+                ESP_LOGW(TAG,
+                         "Network steering still failing; retrying in 10 minutes");
+
+                alarm_timer_schedule(esp_zigbee_alarm_bdb_commissioning, EZB_BDB_MODE_NETWORK_STEERING, ESP_ZIGBEE_STEERING_RETRY_LONG_MS);
+            }
         }
     }
     break;
@@ -158,27 +204,27 @@ static esp_err_t create_data_model(void)
 
     /* Temperature measurement */
     ezb_zcl_temperature_measurement_cluster_server_config_t temp_cfg = {
-        .measured_value = 0,
-        .min_measured_value = -4000, // -40.00 °C
-        .max_measured_value = 8500,  //  85.00 °C
+        .measured_value = ZCL_TEMP_UNKNOWN,
+        .min_measured_value = BME280_MIN_TEMP * 100, // -40.00 °C
+        .max_measured_value = BME280_MAX_TEMP * 100, //  85.00 °C
     };
     ezb_zcl_cluster_desc_t temp_desc = ezb_zcl_temperature_measurement_create_cluster_desc(&temp_cfg, EZB_ZCL_CLUSTER_SERVER);
     ezb_af_endpoint_add_cluster_desc(ep_desc, temp_desc);
 
     /* Relative humidity measurement */
     ezb_zcl_rel_humidity_measurement_cluster_server_config_t hum_cfg = {
-        .measured_value = 0,
-        .min_measured_value = 0,
-        .max_measured_value = 10000, // 100.00 %
+        .measured_value = ZCL_HUMIDITY_UNKNOWN,
+        .min_measured_value = BME280_MIN_HUM,
+        .max_measured_value = BME280_MAX_HUM * 100, // 100.00 %
     };
     ezb_zcl_cluster_desc_t hum_desc = ezb_zcl_rel_humidity_measurement_create_cluster_desc(&hum_cfg, EZB_ZCL_CLUSTER_SERVER);
     ezb_af_endpoint_add_cluster_desc(ep_desc, hum_desc);
 
     /* Pressure measurement */
     ezb_zcl_pressure_measurement_cluster_server_config_t press_cfg = {
-        .measured_value = 0,
-        .min_measured_value = 300,  // 300 hPa
-        .max_measured_value = 1100, // 1100 hPa
+        .measured_value = ZCL_PRESSURE_UNKNOWN,
+        .min_measured_value = BME280_MIN_PRESS, // 300 hPa
+        .max_measured_value = BME280_MAX_PRESS, // 1100 hPa
     };
     ezb_zcl_cluster_desc_t press_desc = ezb_zcl_pressure_measurement_create_cluster_desc(&press_cfg, EZB_ZCL_CLUSTER_SERVER);
     ezb_af_endpoint_add_cluster_desc(ep_desc, press_desc);
@@ -201,9 +247,10 @@ esp_err_t esp_zigbee_setup_commissioning(void)
     ezb_aps_secur_enable_distributed_security(false);
     ESP_RETURN_ON_ERROR(ezb_bdb_set_primary_channel_set((uint32_t)CONFIG_APP_ZB_PRIMARY_CHANNEL_MASK), TAG, "Failed to set the primary chanel mask");
     ESP_RETURN_ON_ERROR(ezb_bdb_set_secondary_channel_set((uint32_t)CONFIG_APP_ZB_SECONDARY_CHANNEL_MASK), TAG, "Failed to set the secondary chanel mask");
-    ESP_RETURN_ON_ERROR(ezb_app_signal_add_handler(esp_zigbee_app_signal_handler),
-                        TAG, "Failed to add the zigbee signal handler");
+    ESP_RETURN_ON_ERROR(ezb_app_signal_add_handler(esp_zigbee_app_signal_handler), TAG, "Failed to add the zigbee signal handler");
+#ifdef CONFIG_FREERTOS_USE_TICKLESS_IDLE
     ezb_nwk_set_rx_on_when_idle(false);
+#endif
     return ESP_OK;
 }
 
@@ -253,73 +300,148 @@ esp_err_t zigbee_init(void)
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Zigbee stack ready");
+    ESP_LOGI(TAG, "Zigbee stack task started");
 
     return ESP_OK;
 }
 
 void zigbee_report_bme280(const bme280_data_t *reading)
 {
-    if (reading == NULL || !is_connected || isnan(reading->temp) || isnan(reading->hum) || isnan(reading->press))
+    if (reading == NULL || isnan(reading->temp) || isnan(reading->hum) || isnan(reading->press))
     {
-        ESP_LOGW(TAG, "Skip BME280 report");
+        ESP_LOGV(TAG, "Skip invalid BME280 reading");
         return;
     }
 
-    if (reading->temp < -40.0f || reading->temp > 85.0f ||
-        reading->hum < 0.0f || reading->hum > 100.0f ||
-        reading->press < 300.0f || reading->press > 1100.0f)
+    if (reading->temp < (float)BME280_MIN_TEMP || reading->temp > (float)BME280_MAX_TEMP ||
+        reading->hum < (float)BME280_MIN_HUM || reading->hum > (float)BME280_MAX_HUM ||
+        reading->press < (float)BME280_MIN_PRESS || reading->press > (float)BME280_MAX_PRESS)
     {
-        ESP_LOGW(TAG, "Skip BME280 report: out of range T=%.2f H=%.2f P=%.2f",
+        ESP_LOGW(TAG, "Skip BME280 report: out of range "
+                      "T=%.2f H=%.2f P=%.2f",
                  reading->temp, reading->hum, reading->press);
         return;
     }
 
+    if (!zigbee_stack_ready)
+    {
+        ESP_LOGV(TAG, "Zigbee stack not ready; skip Zigbee update");
+        return;
+    }
+
+    /*
+     * ZCL:
+     *   Temperature = 0.01 °C
+     *   Humidity    = 0.01 %
+     *   Pressure    = 1 hPa
+     */
+    int16_t temp_zcl = (int16_t)lroundf(reading->temp * 100.0f);
+    uint16_t hum_zcl = (uint16_t)lroundf(reading->hum * 100.0f);
+    int16_t press_zcl = (int16_t)lroundf(reading->press);
+
     esp_zigbee_lock_acquire(portMAX_DELAY);
 
-    int16_t temp_zcl = (int16_t)(reading->temp * 100.0f);
-    uint16_t hum_zcl = (uint16_t)(reading->hum * 100.0f);
-    int16_t press_zcl = (int16_t)(reading->press);
-
     ezb_zcl_status_t temp_attr = ezb_zcl_set_attr_value(
-        ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER,
-        EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &temp_zcl, false);
+        ENV_MONITOR_EP_ID,
+        EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT,
+        EZB_ZCL_CLUSTER_SERVER,
+        EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID,
+        EZB_ZCL_STD_MANUF_CODE,
+        &temp_zcl,
+        false);
 
     ezb_zcl_status_t hum_attr = ezb_zcl_set_attr_value(
-        ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER,
-        EZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &hum_zcl, false);
+        ENV_MONITOR_EP_ID,
+        EZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT,
+        EZB_ZCL_CLUSTER_SERVER,
+        EZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_MEASURED_VALUE_ID,
+        EZB_ZCL_STD_MANUF_CODE,
+        &hum_zcl,
+        false);
 
     ezb_zcl_status_t press_attr = ezb_zcl_set_attr_value(
-        ENV_MONITOR_EP_ID, EZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT, EZB_ZCL_CLUSTER_SERVER,
-        EZB_ZCL_ATTR_PRESSURE_MEASUREMENT_MEASURED_VALUE_ID, EZB_ZCL_STD_MANUF_CODE, &press_zcl, false);
+        ENV_MONITOR_EP_ID,
+        EZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT,
+        EZB_ZCL_CLUSTER_SERVER,
+        EZB_ZCL_ATTR_PRESSURE_MEASUREMENT_MEASURED_VALUE_ID,
+        EZB_ZCL_STD_MANUF_CODE,
+        &press_zcl,
+        false);
 
-    if (temp_attr != EZB_ZCL_STATUS_SUCCESS || hum_attr != EZB_ZCL_STATUS_SUCCESS || press_attr != EZB_ZCL_STATUS_SUCCESS || !ezb_bdb_dev_joined())
+    if (temp_attr != EZB_ZCL_STATUS_SUCCESS ||
+        hum_attr != EZB_ZCL_STATUS_SUCCESS ||
+        press_attr != EZB_ZCL_STATUS_SUCCESS)
     {
+        ESP_LOGW(TAG,
+                 "Failed to update Zigbee attributes: "
+                 "T=0x%02x H=0x%02x P=0x%02x",
+                 temp_attr,
+                 hum_attr,
+                 press_attr);
+
+        esp_zigbee_lock_release();
+        return;
+    }
+
+    if (!ezb_bdb_dev_joined())
+    {
+        ESP_LOGV(TAG, "BME280 attributes updated; device not joined");
         esp_zigbee_lock_release();
         return;
     }
 
     ezb_zcl_report_attr_cmd_t report = {
         .cmd_ctrl = {
-            .dst_addr.addr_mode = EZB_ADDR_MODE_NONE,
+            .dst_addr = {
+                .addr_mode = EZB_ADDR_MODE_SHORT,
+                .u.short_addr = 0x0000,
+            },
+            .dst_ep = 1,
             .src_ep = ENV_MONITOR_EP_ID,
             .cluster_id = EZB_ZCL_CLUSTER_ID_TEMPERATURE_MEASUREMENT,
-            .fc.direction = EZB_ZCL_CMD_DIRECTION_TO_CLI,
+            .fc = {
+                .direction = EZB_ZCL_CMD_DIRECTION_TO_CLI,
+                .dis_default_rsp = 1,
+                .manuf_specific = 0,
+            },
         },
         .payload = {
             .attr_id = EZB_ZCL_ATTR_TEMPERATURE_MEASUREMENT_MEASURED_VALUE_ID,
         },
     };
 
-    ezb_zcl_report_attr_cmd_req(&report);
+    ezb_err_t err = ezb_zcl_report_attr_cmd_req(&report);
+    if (err != EZB_ERR_NONE)
+    {
+        ESP_LOGW(TAG, "Temperature report failed: %d", err);
+    }
 
     report.cmd_ctrl.cluster_id = EZB_ZCL_CLUSTER_ID_PRESSURE_MEASUREMENT;
     report.payload.attr_id = EZB_ZCL_ATTR_PRESSURE_MEASUREMENT_MEASURED_VALUE_ID;
-    ezb_zcl_report_attr_cmd_req(&report);
+
+    err = ezb_zcl_report_attr_cmd_req(&report);
+    if (err != EZB_ERR_NONE)
+    {
+        ESP_LOGW(TAG, "Pressure report failed: %d", err);
+    }
 
     report.cmd_ctrl.cluster_id = EZB_ZCL_CLUSTER_ID_REL_HUMIDITY_MEASUREMENT;
     report.payload.attr_id = EZB_ZCL_ATTR_REL_HUMIDITY_MEASUREMENT_MEASURED_VALUE_ID;
-    ezb_zcl_report_attr_cmd_req(&report);
 
+    err = ezb_zcl_report_attr_cmd_req(&report);
+    if (err != EZB_ERR_NONE)
+    {
+        ESP_LOGW(TAG, "Humidity report failed: %d", err);
+    }
+
+    esp_zigbee_lock_release();
+}
+
+void zigbee_factory_reset(void)
+{
+    ESP_LOGW(TAG, "Factory reset: leaving network and wiping storage");
+
+    esp_zigbee_lock_acquire(portMAX_DELAY);
+    ezb_bdb_reset_via_local_action();
     esp_zigbee_lock_release();
 }

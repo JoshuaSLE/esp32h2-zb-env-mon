@@ -35,9 +35,8 @@ extern "C"
      * @param pressure_hpa Pressure (hPa).
      * @return esp_err_t
      */
-    /* ---- FIX: parameter order now matches display.c ---- */
-    esp_err_t display_show_readings(esp_lcd_panel_handle_t panel_handle,
-                                    float temp_c, float humidity_pct, float pressure_hpa);
+    esp_err_t display_update(esp_lcd_panel_handle_t panel_handle,
+                             float temp_c, float humidity_pct, float pressure_hpa, uint8_t display_timeout_s);
 
     /**
      * @brief Display off on.

@@ -18,10 +18,16 @@ extern "C"
 
     /**
      * @brief Report the BME280 readings.
-     * 
+     *
      * @param reading BME280 readings data.
      */
     void zigbee_report_bme280(const bme280_data_t *reading);
+
+    /**
+     * @brief Sends a Zigbee leave request, erases NVS network credentials, and soft-resets the MCU.
+     * 
+     */
+    void zigbee_factory_reset(void);
 
 #ifdef __cplusplus
 }

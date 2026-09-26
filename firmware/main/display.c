@@ -209,28 +209,30 @@ esp_err_t display_deinit(esp_lcd_panel_handle_t *panel_handle)
     return err;
 }
 
-esp_err_t display_show_readings(esp_lcd_panel_handle_t panel_handle,
-                                float temp_c, float humidity_pct, float pressure_hpa)
+esp_err_t display_update(esp_lcd_panel_handle_t panel_handle,
+                         float temp_c, float humidity_pct, float pressure_hpa, uint8_t display_timeout_s)
 {
     if (panel_handle == NULL)
     {
         return ESP_ERR_INVALID_ARG;
     }
 
-    char line1[16], line2[16], line3[16], line4[16];
+    char line1[16], line2[16], line3[16], line4[16], line5[16];
 
     (void)snprintf(line1, sizeof(line1), "Readings");
     (void)snprintf(line2, sizeof(line2), "%.1f\xB0"
                                          "C",
                    temp_c);
     (void)snprintf(line3, sizeof(line3), "%.0f%%", humidity_pct);
-    (void)snprintf(line4, sizeof(line4), "%.0f hPa", pressure_hpa);
+    (void)snprintf(line4, sizeof(line4), "%.0fhPa", pressure_hpa);
+    (void)snprintf(line5, sizeof(line5), "Timeout: %us", display_timeout_s);
 
     fb_clear();
     fb_draw_string(0, 0, line1);
     fb_draw_string(0, 12, line2);
     fb_draw_string(0, 24, line3);
     fb_draw_string(0, 36, line4);
+    fb_draw_string(0, 56, line5);
 
     ESP_RETURN_ON_ERROR(
         esp_lcd_panel_draw_bitmap(panel_handle, 0, 0, FB_WIDTH, FB_HEIGHT, framebuffer),

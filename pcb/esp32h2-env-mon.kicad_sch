@@ -1,0 +1,21 @@
+(kicad_sch
+	(version 20260306)
+	(generator "eeschema")
+	(generator_version "10.0")
+	(uuid "b1acb1c3-f2d8-40c0-a5e9-e2928fd7dcd2")
+	(paper "A4")
+	(title_block
+		(title "ESP32H2-Env-Mon")
+		(date "2026-10-14")
+		(rev "1")
+		(company "Joshua E")
+		(comment 1 "ESP32-H2 Zigbee Environmental Monitor")
+	)
+	(lib_symbols)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

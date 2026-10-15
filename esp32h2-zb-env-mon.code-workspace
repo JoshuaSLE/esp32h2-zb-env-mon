@@ -5,7 +5,7 @@
 			"path": "firmware"
 		},
 		{
-			"name": "ZigbeeBME280",
+			"name": "root",
 			"path": "."
 		}
 	],
@@ -13,5 +13,14 @@
 		"cmake.configureOnOpen": false,
 		"cmake.autoSelectActiveFolder": false,
 		"cmake.autoDetectSourceDirectory": false
+	},
+	"extensions": {
+		"recommendations": [
+			"ms-vscode.cmake-tools",
+			"espressif.esp-idf-extension",
+		],
+		"unwantedRecommendations": [
+			"llvm-vs-code-extensions.vscode-clangd",
+		]
 	}
 }
